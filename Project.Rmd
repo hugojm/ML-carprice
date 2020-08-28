@@ -1,0 +1,511 @@
+---
+title: "Proyecto"
+author: "Hugo Jiménez i Jaume Martínez"
+date: "3/17/2020"
+output: html_document
+---
+
+```{r}
+# install.packages("MASS")
+# install.packages("tidyverse")
+# install.packages("caret")
+# install.packages("MLmetrics")
+# install.packages("hydroGOF")
+# install.packages("nnet")
+# install.packages("randomForest")
+# install.packages("Matrix")
+# install.packages("glmnet")
+```
+
+```{r}
+library(MASS)
+library(tidyverse)
+library(caret)
+library(MLmetrics)
+library(hydroGOF)
+library(nnet)
+library(randomForest)
+library(Matrix)
+library(glmnet)
+```
+
+## Preprocessing 
+
+```{r}
+dd <- read.csv("train-data.csv")
+dtest <- read.csv("test-data.csv")
+```
+
+
+
+```{r}
+summary(dd)
+```
+
+
+Veiem que hi ha columnes on tenim les unitats de la variable, això no ens interessa, per tant treiem les unitats i ho convertim a numeric.
+A més, és més intuitiu utilitzar l'edat del coche que l'any de fabricació.
+
+```{r}
+dd$Engine <- gsub(" CC","",dd$Engine)
+dd$Engine <- as.integer(dd$Engine)
+dd$Power <- gsub(" bhp","",dd$Power)
+dd$Power <- as.numeric(dd$Power)
+Age <- as.integer(2020-dd$Year)
+dd$Year <- Age
+names(dd)[4] <- "Age"
+head(dd)
+```
+
+El New_price té 5195 valors nulls, per tant, prenem la decisió d'eliminar aquesta variable
+
+```{r}
+sum(dd$New_Price == "")
+dd <- dd [,-13] 
+# plot(dd)
+```
+
+
+```{r}
+summary(dd)
+```
+
+
+
+La variable Mileage (el consum de combustible) té 46 valors que están en unes altres unitats, com no podem assegurar la correcta conversió a causa de les diferents densitats del combustible creiem convenient treure aquestes files. 
+
+
+```{r}
+sum(substring(dd$Mileage, first = 6) == "km/kg")
+ML <- (substring(dd$Mileage, first = 6) == "km/kg")
+dd <- dd[ML == FALSE,]
+dd$Mileage <- gsub(" kmpl","",dd$Mileage)
+dd$Mileage <- as.numeric(dd$Mileage)
+dd
+```
+
+
+```{r}
+dd <- dd[dd$Seats != 0,]
+dd <- dd[dd$Mileage != 0,]
+dd <- dd[!is.na(dd$Power),]
+dd <- dd[,-1]
+summary(dd)
+```
+
+
+Passem a caracters per poder manipular la variable Name i quedar-nos únicament amb la marca
+```{r}
+head(dd)
+dd$Name <- as.character(dd$Name)
+for (i in 1:length(dd$Name)){
+  z <- str_split(dd$Name[i]," ",simplify = TRUE)
+  dd$Name[i] <- z[1,1]
+}
+dd$Name <- as.factor(dd$Name)
+dd$Price <- dd$Price*1214.2
+```
+Categoritzem les variables que ho necessiten.
+```{r}
+head(dd)
+dd$Name <- as.factor(dd$Name)
+dd$Seats <- as.factor(dd$Seats)
+head(dd)
+dd$Engine <- as.double(dd$Engine)
+dd$Kilometers_Driven <- as.double(dd$Kilometers_Driven)
+names(dd)[1] <- "Brand"
+```
+
+```{r}
+boxplot(dd$Engine)
+boxplot(dd$Power)
+boxplot(dd$Kilometers_Driven)
+boxplot(dd$Age)
+boxplot(dd$Mileage)
+```
+
+Treiem aquests outliers ja que afecten negativament al model, hem anat creant models treient diferents outliers i aquestes podes són les que millor performance ens han donat. A més aconseguim gaussianitat en algunes variables.
+```{r}
+dd <- dd[dd$Price < 80000,]
+dd <- dd[dd$Engine < 3000,]
+dd <- dd[dd$Power < 300,]
+dd <- dd[dd$Kilometers_Driven < 100000,]
+
+```
+
+
+## Data visualization
+
+Veiem que la variable Price necesita una transformació logarítmica per poder-la assumir com a gaussiana.
+```{r}
+hist(dd$Price)
+boxcox(lm(Price~.,dd),lambda = seq(-1, 1,by=0.1))
+```
+
+Treiem les marques que tenen un o 2 cotxes ja que donen problemes a la hora de crear els models, ja que si al train no tenim la marca pero al test si, no és capaç de predir.
+```{r}
+dd$Fuel_Type <- factor(dd$Fuel_Type,levels = c("Petrol","Diesel"))
+summary(dd$Brand)
+dd <- dd [dd$Brand != "Ambassador", ]
+dd <- dd [dd$Brand != "Isuzu", ]
+dd <- dd [dd$Brand != "ISUZU", ]
+dd <- dd [dd$Brand != "Bentley", ]
+```
+Veiem que les dades no són gaussianes, però si apliquem el logaritme si que ho són. Per tant apliquem aquesta transformació a totes les variables que ho necessitin.
+
+```{r}
+hist(dd$Engine)
+hist(dd$Power)
+hist(dd$Kilometers_Driven)
+hist(dd$Age)
+hist(dd$Mileage)
+```
+
+```{r}
+dd$Engine <- log(dd$Engine)
+dd$Power <- log(dd$Power)
+```
+
+## Resampling
+
+Per tal de interpretar millor les ponderacions de cada variable i evitar que unes variables tinguin més pes que d'altres, estandaritzem les dades.
+```{r}
+dd[,c(3,4,8,9,10)] <- scale(dd[,c(3,4,8,9,10)])
+head(dd)
+```
+
+Generem els conjunts de train i test.
+```{r}
+set.seed (123456)
+N.row <- nrow(dd)                                                                                              
+learn <- sample(1:N.row, round(0.67*N.row))
+nlearn <- length(learn)
+ntest <- N.row - nlearn
+```
+
+
+### GLM
+
+Creem el GLM amb link log i fem l'step per eliminar variables que no importen.
+```{r}
+(model.linreg <- glm(Price~.,data=dd[learn,], family = gaussian(link="log")))
+model.linreg.FINAL <- step(model.linreg)
+summary(model.linreg.FINAL)
+```
+
+
+```{r}
+plot(predict(model.linreg.FINAL, ty = "response"),dd[learn,12])
+```
+
+### LASSO
+
+Modelem el Lasso i veiem el valor de l'MSE en funció del logaritme de l'hiper paràmetre lambda
+```{r}
+x_train <- model.matrix(Price~ .-1, dd[learn,])
+t <- dd[learn,12]
+model.lasso <- cv.glmnet(x_train, y = log(t), alpha = 1)
+plot(model.lasso)
+(best_lambda <- model.lasso$lambda[which.min(model.lasso$cvm)])
+```
+
+```{r}
+plot(exp(predict(model.lasso, newx = x_train, s = "lambda.min")),dd[learn,12], xlim = c(0,80000), ylim = c(0,80000))
+```
+
+```{r}
+# Find the best lambda using cross-validation
+set.seed(123) 
+cv2 <- cv.glmnet(x_train, log(t), alpha = 1)
+# Display the best lambda value
+cv2$lambda.min
+
+```
+
+
+```{r}
+# Fit the final model on the training data
+model.lasso <- glmnet(x_train, log(t), alpha = 1, lambda = cv2$lambda.min)
+# Display regression coefficients
+coef(model.lasso)
+```
+
+### RIDGE
+
+Fem el mateix amb el model Ridge
+```{r}
+model.ridge <- cv.glmnet(x_train, y = log(t), alpha = 0)
+plot(model.ridge)
+(best_lambda <- model.ridge$lambda[which.min(model.ridge$cvm)])
+
+```
+
+
+```{r}
+x_test <- model.matrix(Price ~ .-1, dd[-learn,])
+plot(exp(predict(model.ridge, newx = x_train, s = "lambda.min")),dd[learn,12], xlim = c(0,80000), ylim = c(0,80000))
+```
+
+```{r}
+# Find the best lambda using cross-validation
+set.seed(123) 
+cv <- cv.glmnet(x_train, log(t), alpha = 0)
+# Display the best lambda value
+cv$lambda.min
+```
+```{r}
+# Fit the final model on the training data
+model.rid <- glmnet(x_train, log(t), alpha = 0, lambda = cv$lambda.min)
+# Display regression coefficients
+coef(model.rid)
+```
+
+### XARXES NEURONALS: MLP
+
+Calculem una xarxa neuronal bàsica per a obtenir el nombre de neurones necessàries.
+```{r}
+nnt0 <- nnet(Price~. , data = dd[learn,], size = 1, maxit =200, decay=0)
+M <- nnt0$n[1]
+(H <- round(M/2))
+```
+
+Definim els paràmetres per dur a terme la cross validation.
+
+```{r}
+
+fitControl <- trainControl(method = "repeatedcv",
+                           number = 10,
+                           repeats = 10,
+                            )
+
+nnetGrid <-  expand.grid(size = H,
+                        decay = 10^seq(-2, 0, by=0.2))
+
+nnetFit <- train(Price ~ .,
+                 data = dd[learn, ],
+                 method = "nnet",
+                 trControl = fitControl,
+                 tuneGrid = nnetGrid,
+                 trace=FALSE,
+                 linout =1, MaxNWts = 2000)
+
+```
+
+
+
+```{r}
+nnetFit
+```
+
+```{r}
+model.nnet <- nnet(log(Price) ~., data = dd[learn,], size=H, maxit=200, decay=0.03981072, linout = 1,MaxNWts = 2000)
+```
+
+```{r}
+plot(exp(predict(model.nnet, newdata=dd[learn,])),dd[learn,12], xlim = c(0,80000), ylim = c(0,80000))
+```
+
+
+### RANDOM FOREST
+
+
+Regularitzarem els paràmetres ntrees i mtry basant-nos en el OOB.
+
+```{r}
+set.seed(1)
+(ntrees <- round(2^seq(1,11)))
+rf.results <- matrix (rep(0,2*length(ntrees)), nrow=length(ntrees))
+colnames (rf.results) <- c("ntrees", "OOB")
+rf.results[,"ntrees"] <- ntrees
+rf.results[,"OOB"] <- 0
+```
+
+
+```{r}
+ii <- 1
+for (nt in ntrees)
+{ 
+  print(nt)
+  
+  # build forest
+  model.rf1 <- randomForest(log(Price) ~ ., data=dd[learn,], ntree=nt, proximity=FALSE)
+  # get the OOB and store it appropriately
+  rf.results[ii, "OOB"] <- (sum(abs(exp(predict(model.rf1, 
+                                            newdata = dd[learn,]  ))-dd[learn,12])/nlearn))
+  ii <- ii+1
+}
+model.rf1
+
+```
+
+Veiem els resultats per veure quin valor escollir
+
+```{r}
+rf.results
+```
+
+Mirem quin valor del mtry és millor fixant el paràmetre ntree a 256, que és el millor valor obtingut abans.
+
+```{r}
+oob.err=double(13)
+test.err=double(13)
+
+for(mtry in 1:13) 
+{
+  rf=randomForest(log(Price) ~ . , data = dd[learn,], mtry=mtry, ntree=256) 
+  oob.err[mtry] = rf$mse[256] 
+  
+  pred<-exp(predict(rf,dd[-learn,])) #Predictions on Test Set for each Tree
+  test.err[mtry]= with(dd[-learn,], mean( (Price - pred)^2)) #Mean Squared Test Error
+  
+  cat(mtry," ") #printing the output to the console
+}
+test.err
+```
+
+
+```{r}
+(model.rf <- randomForest (log(Price) ~ ., data=dd[learn,], mtry = 10, ntree=256, proximity=FALSE))
+plot(exp(predict(model.rf, newdata=dd[learn,])),dd[learn,12], xlim = c(0,80000), ylim = c(0,80000))
+```
+
+
+## CROSS VALIDATION
+
+Fem CV per determinar el millor model.
+
+```{r}
+t <- dd[learn,12]
+lambda <- cv$lambda.min
+# Build the model
+set.seed
+fitControl <- trainControl(## 10-fold CV
+                           method = "repeatedcv",
+                           number = 10,
+                           ## repeated ten times
+                           repeats = 10)
+ridge <- train(
+  log(Price)~., data = dd[learn,], method = "glmnet",
+  trControl = fitControl,
+  tuneGrid = expand.grid(alpha = 0, lambda = lambda)
+  )
+# Model coefficients
+coef(ridge$finalModel, ridge$bestTune$lambda)
+# Make predictions
+predictions <- ridge %>% predict(dd[learn,])
+# Model prediction performance
+ridge.table = c(
+  RMSE = RMSE(exp(predictions), t),
+  Rsquare = R2(exp(predictions), t),
+  NRMSE = nrmse(exp(predictions), t)
+)
+```
+
+```{r}
+lambda <- cv2$lambda.min
+# Build the model
+set.seed(1234)
+lasso <- train(
+  log(Price)~., data = dd[learn,], method = "glmnet",
+  trControl = trainControl("repeatedcv", number = 10, repeats = 10),
+  tuneGrid = expand.grid(alpha = 1, lambda = lambda)
+  )
+# Model coefficients
+coef(lasso$finalModel, lasso$bestTune$lambda)
+# Make predictions
+predictions <- lasso %>% predict(dd[learn,])
+# Model prediction performance
+lasso.table = c(
+  RMSE = RMSE(exp(predictions), t),
+  Rsquare = R2(exp(predictions), t),
+  NRMSE = nrmse(exp(predictions), t)
+)
+
+```
+
+
+```{r}
+# Build the model
+set.seed(1234)
+glm <- train(
+  log(Price)~., data = dd[learn,], method = "glm",
+  trControl = trainControl("repeatedcv", number = 10, repeats = 10),
+  )
+# Model coefficients
+
+# Make predictions
+predictions <- glm %>% predict(dd[learn,])
+# Model prediction performance
+glm.table = c(
+  RMSE = RMSE(exp(predictions), t),
+  Rsquare = R2(exp(predictions), t),
+  NRMSE = nrmse(exp(predictions), t)
+)
+```
+
+```{r}
+# Build the model
+set.seed(1234)
+nnetGrid <-  expand.grid(size = H,
+                        decay = 0.03981072)
+mlp <- train(
+  log(Price)~., data = dd[learn,], method = "nnet",
+  trControl = trainControl("repeatedcv", number = 10, repeats = 10),
+  tuneGrid = nnetGrid,trace=FALSE, 
+  linout =1, MaxNWts = 2000
+  )
+
+# Make predictions
+predictions <- mlp %>% predict(dd[learn,])
+# Model prediction performance
+mlp.table = c(
+  RMSE = RMSE(exp(predictions), t),
+  Rsquare = R2(exp(predictions), t),
+  NRMSE = nrmse(exp(predictions), t)
+)
+```
+
+```{r}
+# Build the model
+set.seed(1234)
+rfGrid <-  expand.grid(mtry = 10)
+rf <- train(
+  log(Price)~., data = dd[learn,], method = "rf",
+  trControl = trainControl("repeatedcv", number = 10, repeats = 10),
+  tuneGrid = rfGrid, ntree = 256,proximity = FALSE
+  )
+
+# Make predictions
+predictions <- rf %>% predict(dd[learn,])
+# Model prediction performance
+rf.table = c(
+  RMSE = RMSE(exp(predictions), t),
+  Rsquare = R2(exp(predictions), t),
+  NRMSE = nrmse(exp(predictions), t)
+)
+```
+
+
+Fem la taula dels resultats de la CV
+
+```{r}
+(result=data.frame(
+GLM = glm.table,
+LASSO = lasso.table,
+RIDGE = ridge.table,
+MLP = mlp.table,
+RF = rf.table
+))
+```
+
+
+Veiem com es comporta el model finalment escollit: MLP.
+
+```{r}
+(sum(abs(exp(predict(mlp, newdata = dd[-learn,]))-dd[-learn,12])/dd[-learn,12])/ntest)
+(sum(abs(exp(predict(mlp, newdata = dd[-learn,]))-dd[-learn,12]))/ntest)
+nrmse(exp(predict(mlp, newdata = dd[-learn,])), dd[-learn,12])
+mse(exp(predict(mlp, newdata = dd[-learn,])), dd[-learn,12])
+plot(exp(predict(mlp, newdata=dd[-learn,])),dd[-learn,12], xlim = c(0,80000), ylim = c(0,80000))
+```
+
